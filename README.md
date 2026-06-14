@@ -13,6 +13,51 @@ install.
 > especially when pointing it at scripts you don't fully trust. The built-in risk
 > analyzer is a heuristic aid, **not** a security guarantee.
 
+## Screenshots
+
+**Open a script → get a GUI.** Every control is generated from the script's
+`param()` block; the live command preview shows exactly what will run.
+
+![Controls tab — the auto-generated form](docs/screenshots/controls.png)
+
+**Built-in risk analysis.** Risky lines are tinted inline, and the panel lists
+every finding (Warning / Caution) with its line — click one to jump to it.
+*(Heuristic, not antivirus.)*
+
+![Script tab — the risk-analysis findings panel](docs/screenshots/analyzer.png)
+
+**Risk-gated Run.** When the analyzer flags Warning-level patterns, Run stays
+disabled until you tick the acknowledgment — and required fields must be filled
+first. *(Heuristic, not antivirus.)*
+
+![Run gated by a risk acknowledgment](docs/screenshots/run-gate.png)
+
+**The mapper.** Fix what auto-detection missed — change a control's type/label,
+mark it required, edit dropdown options, add custom controls, and bind each to
+the exact `$variable` / `%N` token in the script.
+
+![The mapper — edit controls](docs/screenshots/mapper.png)
+
+**Batch files too.** A `.bat`'s `%1` / `%2` are detected as ordered arguments.
+
+![Batch controls](docs/screenshots/batch.png)
+
+**Pick-to-bind.** Adding or fixing a control? Click the exact `$variable` (or a
+`%N` in a batch file) it should drive — the green chips mark every bindable
+token, so there's no guessing.
+
+![Pick-to-bind — click a token to wire a control to it](docs/screenshots/pick-bind.png)
+
+**Read-only preview + analysis** — the Script tab pairs a soft-wrapping preview
+with the findings panel (this demo is clean: 0 findings).
+
+![Script tab — preview and analysis](docs/screenshots/script.png)
+
+**A real embedded terminal** (the same ConPTY mechanism Windows Terminal uses)
+is live from launch, with Pause / Stop / Clear and a progress bar.
+
+![The embedded ConPTY terminal](docs/screenshots/terminal.png)
+
 ## Features
 
 - **Auto-generated UI** — a PowerShell `param()` block (or a `.bat`'s `%1`/`%2`
