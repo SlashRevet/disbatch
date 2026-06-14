@@ -40,6 +40,7 @@ install.
 - **Progress bar** — driven by an opt-in `@progress` / `@status` protocol.
 - **Drag-and-drop** a script onto the window to open it.
 - **Dark, offline, single exe** — no telemetry, no network calls, nothing to install.
+  (It does write one local file: the per-script `.disbatch.json` sidecar described below.)
 
 ## How parameters map to controls
 
@@ -77,6 +78,15 @@ echo @status Copying files
 Saved next to the script, holding team-shareable hints, your mapper control
 definitions, and remembered input values. Commit it alongside the script and whoever
 opens it next gets the same hints and controls.
+
+> ⚠️ **The sidecar stores your entered values in plaintext.** Disbatch will **not**
+> save (and masks in the UI) values for parameters whose name looks sensitive —
+> `password`, `secret`, `token`, `apikey`, `credential`, … — but that is a heuristic,
+> not a guarantee. **Review the file before committing**, and add `*.disbatch.json` to
+> your `.gitignore` if it could ever hold something you wouldn't put in version
+> control. (A value you type also appears in the on-screen command preview and in the
+> terminal / PowerShell history when the script runs — inherent to passing it as a
+> command-line argument.)
 
 ## Build & run
 

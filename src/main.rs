@@ -262,6 +262,13 @@ impl DisbatchApp {
             .map(|p| (p.name.clone(), p.value.clone(), p.bool_value))
             .collect();
         for (name, value, b) in snapshot {
+            if is_sensitive(&name) {
+                // Never persist secrets; also scrub any value saved before this
+                // guard existed so re-saving cleans an already-leaked sidecar.
+                self.sidecar.values.remove(&name);
+                self.sidecar.bool_values.remove(&name);
+                continue;
+            }
             self.sidecar.values.insert(name.clone(), value);
             self.sidecar.bool_values.insert(name, b);
         }
@@ -273,6 +280,9 @@ impl DisbatchApp {
     /// Restore remembered input values from the sidecar into the current controls.
     fn apply_saved_values(&mut self) {
         for p in &mut self.params {
+            if is_sensitive(&p.name) {
+                continue; // defensive: don't pull a leaked secret back into the UI
+            }
             if let Some(v) = self.sidecar.values.get(&p.name) {
                 p.value = v.clone();
             }
@@ -891,6 +901,7 @@ impl eframe::App for DisbatchApp {
 }
 
 fn param_widget(ui: &mut egui::Ui, p: &mut Param) {
+    let sensitive = is_sensitive(&p.name);
     match p.kind {
         ParamKind::Bool => {
             ui.checkbox(&mut p.bool_value, "");
@@ -906,7 +917,11 @@ fn param_widget(ui: &mut egui::Ui, p: &mut Param) {
                 });
         }
         ParamKind::Number => {
-            ui.add(egui::TextEdit::singleline(&mut p.value).desired_width(120.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut p.value)
+                    .desired_width(120.0)
+                    .password(sensitive),
+            );
         }
         ParamKind::FolderPath => {
             ui.horizontal(|ui| {
@@ -929,7 +944,11 @@ fn param_widget(ui: &mut egui::Ui, p: &mut Param) {
             });
         }
         ParamKind::Text => {
-            ui.add(egui::TextEdit::singleline(&mut p.value).desired_width(300.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut p.value)
+                    .desired_width(300.0)
+                    .password(sensitive),
+            );
         }
     }
 }
@@ -944,6 +963,20 @@ fn sev_color(s: Severity) -> egui::Color32 {
 /// Quote a value as a PowerShell single-quoted string (doubling embedded quotes).
 fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Heuristic: does this control's name look like it holds a secret? Such values
+/// are never written to the sidecar and are masked in the UI, so a password or
+/// API key can't be accidentally committed via `<script>.disbatch.json`.
+fn is_sensitive(name: &str) -> bool {
+    let n = name.to_lowercase();
+    [
+        "password", "passwd", "pwd", "passphrase", "secret", "token", "apikey",
+        "api_key", "credential", "clientsecret", "client_secret", "privatekey",
+        "private_key", "accesskey", "access_key",
+    ]
+    .iter()
+    .any(|k| n.contains(k))
 }
 
 fn kind_label(k: ParamKind) -> &'static str {
