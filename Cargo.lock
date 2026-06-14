@@ -959,6 +959,7 @@ dependencies = [
  "serde",
  "serde_json",
  "vt100",
+ "winapi",
 ]
 
 [[package]]

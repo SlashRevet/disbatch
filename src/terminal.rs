@@ -29,6 +29,8 @@ pub struct Terminal {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    pid: Option<u32>,
+    paused: bool,
     rows: u16,
     cols: u16,
     font_size: f32,
@@ -59,6 +61,7 @@ impl Terminal {
             cmd.cwd(dir);
         }
         let child = pair.slave.spawn_command(cmd)?;
+        let pid = child.process_id();
         drop(pair.slave); // parent doesn't need the slave side
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 5000)));
@@ -119,6 +122,8 @@ impl Terminal {
             writer,
             master: pair.master,
             child,
+            pid,
+            paused: false,
             rows,
             cols,
             font_size: 14.0,
@@ -145,6 +150,32 @@ impl Terminal {
         if let Ok(mut p) = self.progress.lock() {
             *p = TermProgress::default();
         }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Freeze (or unfreeze) the shell process exactly where it is.
+    pub fn toggle_pause(&mut self) {
+        if let Some(pid) = self.pid {
+            let want = !self.paused;
+            suspend_resume(pid, want);
+            self.paused = want;
+        }
+    }
+
+    /// Send Ctrl+C to interrupt the running command (resuming first if paused).
+    pub fn interrupt(&mut self) {
+        if self.paused {
+            self.toggle_pause();
+        }
+        self.send(&[0x03]);
+    }
+
+    /// Clear the visible terminal.
+    pub fn clear(&mut self) {
+        self.send_line("Clear-Host");
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {
@@ -293,6 +324,38 @@ impl Drop for Terminal {
         let _ = self.child.kill();
     }
 }
+
+/// Suspend or resume all threads of a process (an OS-level freeze) via ntdll.
+#[cfg(windows)]
+fn suspend_resume(pid: u32, suspend: bool) {
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::libloaderapi::{GetModuleHandleA, GetProcAddress};
+    use winapi::um::processthreadsapi::OpenProcess;
+    use winapi::um::winnt::{HANDLE, PROCESS_SUSPEND_RESUME};
+    unsafe {
+        let handle = OpenProcess(PROCESS_SUSPEND_RESUME, 0, pid);
+        if handle.is_null() {
+            return;
+        }
+        let ntdll = GetModuleHandleA(b"ntdll.dll\0".as_ptr() as *const i8);
+        if !ntdll.is_null() {
+            let name: &[u8] = if suspend {
+                b"NtSuspendProcess\0"
+            } else {
+                b"NtResumeProcess\0"
+            };
+            let proc = GetProcAddress(ntdll, name.as_ptr() as *const i8);
+            if !proc.is_null() {
+                let func: unsafe extern "system" fn(HANDLE) -> i32 = std::mem::transmute(proc);
+                func(handle);
+            }
+        }
+        CloseHandle(handle);
+    }
+}
+
+#[cfg(not(windows))]
+fn suspend_resume(_pid: u32, _suspend: bool) {}
 
 fn append_run(
     job: &mut egui::text::LayoutJob,

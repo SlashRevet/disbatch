@@ -1,0 +1,20 @@
+{
+  "hints": "",
+  "controls": [],
+  "values": {
+    "Quality": "Medium",
+    "Recurse": "",
+    "Iterations": "5",
+    "InputFolder": "D:\\ai\\Disbatch\\examples",
+    "DryRun": "",
+    "OutFile": "result.txt"
+  },
+  "bool_values": {
+    "InputFolder": false,
+    "Iterations": false,
+    "Quality": false,
+    "DryRun": false,
+    "Recurse": false,
+    "OutFile": false
+  }
+}

@@ -756,7 +756,13 @@ impl DisbatchApp {
         }
 
         ui.separator();
-        ui.label(egui::RichText::new("Command preview").weak());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Command preview").weak());
+            if ui.button("📋 Copy").clicked() {
+                let cmd = self.compose_command();
+                ui.output_mut(|o| o.copied_text = cmd);
+            }
+        });
         ui.add(
             egui::Label::new(egui::RichText::new(self.compose_command()).monospace())
                 .selectable(true),
@@ -836,9 +842,24 @@ impl eframe::App for DisbatchApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.strong("Terminal");
-                    ui.label(egui::RichText::new("ConPTY · PowerShell").weak());
                     if ui.button("New session").clicked() {
                         self.spawn_terminal(ctx);
+                    }
+                    if let Some(t) = self.terminal.as_mut() {
+                        let paused = t.is_paused();
+                        if ui
+                            .button(if paused { "▶ Resume" } else { "⏸ Pause" })
+                            .on_hover_text("Freeze/unfreeze the running script exactly where it is")
+                            .clicked()
+                        {
+                            t.toggle_pause();
+                        }
+                        if ui.button("⏹ Stop").on_hover_text("Send Ctrl+C").clicked() {
+                            t.interrupt();
+                        }
+                        if ui.button("🗑 Clear").clicked() {
+                            t.clear();
+                        }
                     }
                     if let Some(err) = &self.terminal_err {
                         ui.colored_label(RED, err);
