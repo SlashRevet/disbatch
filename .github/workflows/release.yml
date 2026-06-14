@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release exe
+        run: cargo build --release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/disbatch.exe
+          body: |
+            **Disbatch** — point it at a PowerShell or `.bat` script and it generates a
+            GUI, statically analyses it for risky behaviour, and runs it in an embedded
+            terminal with a progress bar.
+
+            > ⚠️ **"Vibecoded"** — built fast as a personal project and lightly tested.
+            > The built-in risk scanner is a heuristic aid, **not** antivirus.
+
+            The `disbatch.exe` download is **unsigned**, so Windows SmartScreen may say
+            *"Windows protected your PC"* — click **More info → Run anyway**.
