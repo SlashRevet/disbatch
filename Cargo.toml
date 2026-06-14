@@ -1,0 +1,20 @@
+[package]
+name = "disbatch"
+version = "0.1.0"
+edition = "2021"
+description = "Give .ps1/.bat scripts an instant GUI"
+
+[dependencies]
+eframe = "0.27"
+rfd = "0.14"
+regex = "1"
+portable-pty = "0.9.0"
+vt100 = "0.16.2"
+anyhow = "1.0.102"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1
