@@ -1,1 +1,6 @@
 /target
+
+# Local sidecars created while testing the example scripts.
+# (In a real project you *would* commit these to share hints/mappings; here
+# they are just throwaway test state.)
+*.disbatch.json
