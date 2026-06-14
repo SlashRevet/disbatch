@@ -7,6 +7,12 @@ script for risky behaviour, and runs it inside a live embedded terminal with a
 progress bar. One self-contained Windows `.exe`, **100% offline**, no runtime to
 install.
 
+> ⚠️ **"Vibecoded" — use with caution.** Disbatch was built quickly and iteratively
+> (largely with an AI coding assistant) as a personal project. It works, but it has
+> **not** been hardened, audited, or extensively tested. Run it at your own risk —
+> especially when pointing it at scripts you don't fully trust. The built-in risk
+> analyzer is a heuristic aid, **not** a security guarantee.
+
 ## Features
 
 - **Auto-generated UI** — a PowerShell `param()` block becomes a form, no config required.

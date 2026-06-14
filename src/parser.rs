@@ -239,7 +239,37 @@ fn parse_one(decl: &str) -> Option<Param> {
         choices,
         value,
         bool_value,
+        position: None,
+        custom: false,
+        as_env: false,
     })
+}
+
+/// Detect positional arguments (`%1`..`%9`, including `%~dp1` style modifiers)
+/// in a batch/cmd file and turn each into an ordered Text control.
+pub fn parse_batch(source: &str) -> Vec<Param> {
+    let re = Regex::new(r"%(?:~[a-zA-Z]*)?([1-9])").unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    for cap in re.captures_iter(source) {
+        if let Ok(n) = cap[1].parse::<u32>() {
+            seen.insert(n);
+        }
+    }
+    seen.into_iter()
+        .map(|n| Param {
+            name: format!("arg{n}"),
+            label: format!("Argument {n}"),
+            kind: ParamKind::Text,
+            required: false,
+            is_switch: false,
+            choices: Vec::new(),
+            value: String::new(),
+            bool_value: false,
+            position: Some(n),
+            custom: false,
+            as_env: false,
+        })
+        .collect()
 }
 
 /// Guess a path picker from the parameter name when the type is just a string.

@@ -956,6 +956,8 @@ dependencies = [
  "portable-pty",
  "regex",
  "rfd",
+ "serde",
+ "serde_json",
  "vt100",
 ]
 

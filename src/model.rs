@@ -1,6 +1,6 @@
 //! Data model: a parsed script parameter and its current UI value.
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ParamKind {
     Text,
     FilePath,
@@ -26,4 +26,10 @@ pub struct Param {
     pub value: String,
     /// Current value for Bool.
     pub bool_value: bool,
+    /// Batch positional argument index (None for PowerShell named params).
+    pub position: Option<u32>,
+    /// True if added/edited by the user via the mapper (not auto-detected).
+    pub custom: bool,
+    /// Inject the value as an environment variable (`$env:name`) before running.
+    pub as_env: bool,
 }
