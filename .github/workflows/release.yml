@@ -17,6 +17,14 @@ jobs:
       - name: Build release exe
         run: cargo build --release
 
+      - name: Compute SHA-256
+        id: hash
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash target/release/disbatch.exe -Algorithm SHA256).Hash
+          "sha256=$h" >> $env:GITHUB_OUTPUT
+          Write-Host "disbatch.exe SHA-256: $h"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -31,3 +39,15 @@ jobs:
 
             The `disbatch.exe` download is **unsigned**, so Windows SmartScreen may say
             *"Windows protected your PC"* — click **More info → Run anyway**.
+
+            **Verify your download.** The SHA-256 of `disbatch.exe` in this release is:
+
+            ```
+            ${{ steps.hash.outputs.sha256 }}
+            ```
+
+            Check it on your machine and only run it if it matches:
+
+            ```powershell
+            (Get-FileHash .\disbatch.exe -Algorithm SHA256).Hash
+            ```
