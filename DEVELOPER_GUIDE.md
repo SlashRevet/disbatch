@@ -52,9 +52,10 @@ They share exactly three things, each behind an `Arc<Mutex<…>>`: the **vt100 p
 
 | File | Responsibility |
 |---|---|
-| `src/main.rs` | The `eframe` app: all state, the whole UI (panels, tabs, mapper), and the glue logic (open/run/compose/persist). ~960 lines, the biggest file. |
+| `src/main.rs` | The `eframe` app: all state, the whole UI (panels, tabs, mapper), and the glue logic (open/run/compose/persist). ~990 lines, the biggest file. |
 | `src/model.rs` | `Param` + `ParamKind` — the shared data model. |
-| `src/parser.rs` | Turns script text → `Vec<Param>` (PowerShell `param()` block, batch `%N`). |
+| `src/psparse.rs` | **Primary** `.ps1` param parser — drives PowerShell's real AST parser out-of-process (`ParseInput`), maps the result to `Vec<Param>`. |
+| `src/parser.rs` | The regex **fallback** `.ps1` parser, the batch `%N` parser, and the shared naming helpers (`kind_from_name`/`strip_quotes`/`humanize`). |
 | `src/analyzer.rs` | Heuristic risk scanner → `Vec<Finding>`. |
 | `src/terminal.rs` | The embedded ConPTY terminal (spawn, vt100 render, input, pause/stop/clear). |
 | `src/sidecar.rs` | `<script>.disbatch.json` load/save (hints, control defs, remembered values). |
@@ -104,32 +105,39 @@ One `Param` = one control. Produced by `parser.rs`, rendered/edited by `main.rs`
 
 ---
 
-## 4. Parameter detection — `src/parser.rs`
+## 4. Parameter detection — `src/psparse.rs` (primary) + `src/parser.rs` (fallback)
 
-Pure regex + character-scanning (no real PowerShell AST). Two public entry points; everything else is a private helper.
+`.ps1` parameters are read by **PowerShell's own parser**, with the regex parser as a tested fallback. `.bat`/`.cmd` positional args are always regex.
 
-**Called from `main.rs`:** `open_script` (on file open), `reanalyze` (after inline edits), `redetect` (mapper "Re-detect").
+**Dispatch — `main.rs::detect_ps1_params`:** try `psparse::parse` first; on `None` (subprocess failure) fall back to `parser::parse_powershell`. Setting the **`DISBATCH_NO_AST`** env var forces the fallback — an escape hatch, and how the `examples/parser-*.ps1` demos show each path. It returns `(Vec<Param>, Ps1Parser)` so `open_script` can tell the user which parser ran (the note appends "(regex fallback)"). Called from `open_script` (open), `reanalyze` (inline edits), `redetect` (mapper "Re-detect").
 
-### `parse_powershell(source) -> Vec<Param>` — `parser.rs:11`
+### Primary — `psparse::parse(source) -> Option<Vec<Param>>`
 
-A four-stage pipeline:
+Spawns `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <helper>` with `CREATE_NO_WINDOW`, pipes the script to its **stdin**, reads a JSON array back on **stdout**. The helper (`PARSER_SCRIPT`) calls `[System.Management.Automation.Language.Parser]::ParseInput(...)` — the same AST engine PSScriptAnalyzer is built on — which **parses without executing**, walks the *script-level* `$ast.ParamBlock.Parameters`, and emits `{name, type, mandatory, validateSet, default}` per parameter. `json_to_param` maps that to a `Param` (StaticType → `ParamKind`, `ValidateSet` → `Choice`, default un-quoted).
+
+Why out-of-process PowerShell rather than a Rust re-implementation: it's the *real* language parser, so comments, multi-line attributes, nested `{}` script blocks, here-strings and context-dependent parens are all correct for free. **It only ever parses — never runs — the target script.**
+
+`parse` returns `None` **only** when the subprocess itself fails (can't spawn, non-zero exit, unreadable output) — *not* when a script legitimately has no params (that's `Some(vec![])`, which we trust — no fallback). On `None`, dispatch falls back to regex. Both paths **never panic** (every step is `?`/`ok()?`), which is load-bearing under `panic = "abort"`.
+
+### Fallback — `parse_powershell(source) -> Vec<Param>` — `parser.rs:11`
+
+Kept because the AST *subprocess* can fail even when PowerShell can still *run* the script (AV blocks the temp file, a spawn hiccup, a policy quirk). A four-stage pure-regex pipeline:
 
 ```
 strip_block_comments → extract_param_block → split_top_level → parse_one (per decl)
 ```
 
-- **`strip_block_comments`** (`:24`) — removes `<# … #>` via `(?s)<#.*?#>`, replacing with a space to keep offsets stable.
-- **`extract_param_block`** (`:33`) — regex-finds `param(`, then a **character-by-character balanced scan** that tracks paren/bracket/brace depth *and* string state (`'…'`, `"…"` with backtick-escape) *and* `#` line comments, so a `)` inside a default like `= @("a","b")` doesn't close the block early. Returns the interior text.
-- **`split_top_level`** (`:93`) — same string/bracket/comment-aware state machine, splitting on commas only at depth 0. Drops `#` line-comment text entirely.
-- **`parse_one`** (`:152`) — per declaration: collect `[...]` attributes; strip them to find the first `$name`; extract the `= default`. Decide `kind` by precedence: `[switch]`/`[bool]`→`Bool` → `[ValidateSet]`→`Choice` → numeric type (`int`/`long`/`double`/…)→`Number` → else `kind_from_name`. Detect `Mandatory` (any attr containing `mandatory` not followed by `$false`). Pull `ValidateSet` choices via `["']([^"']*)["']`. Resolve the default into `value`/`bool_value`.
-- **`kind_from_name`** (`:276`) — name heuristic when type is just `[string]`: contains `folder`/`dir` → folder picker; `file`/`path` → file picker; else text.
-- **`strip_quotes`** (`:287`), **`humanize`** (`:301`) — unquote defaults; CamelCase/underscore → label (`OutFile` → `Out File`).
+- **`strip_block_comments`** — removes `<# … #>` via `(?s)<#.*?#>`.
+- **`extract_param_block`** — regex-finds `param(`, then a **character-by-character balanced scan** tracking paren/bracket/brace depth *and* string state (`'…'`, `"…"` with backtick-escape) *and* `#` line comments, so a `)` in a comment or a default like `= @("a","b")` doesn't close the block early.
+- **`split_top_level`** — the same state machine, splitting on commas only at depth 0; drops `#` comments.
+- **`parse_one`** — per declaration: collect `[...]` attributes; strip them to find the first `$name`; extract `= default`. `kind` by precedence: `[switch]`/`[bool]`→`Bool` → `[ValidateSet]`→`Choice` → numeric type→`Number` → else `kind_from_name`. Detect `Mandatory` (attr containing `mandatory` not followed by `$false`); pull `ValidateSet` via `["']([^"']*)["']`.
+- **`kind_from_name` / `strip_quotes` / `humanize`** — **shared with `psparse`**, so labels, pickers and defaults resolve identically in both parsers.
+
+**Parity & where they diverge.** On ordinary param blocks the two parsers produce byte-identical `Param`s — enforced by `psparse::tests::regex_fallback_matches_ast_on_conventional_blocks`. They diverge only where the regex can't see structure the AST can, e.g. a `]` inside a `ValidateSet` string: the AST keeps the dropdown, the regex loses it (proven by `ast_outparses_regex_on_a_bracketed_validateset`, shown live by `examples/parser-tricky.ps1`). Both are proven panic-free on adversarial input (`*_never_panics_*`, `full_adversarial_input_through_ast_*`). The mapper fixes anything either gets wrong.
 
 ### `parse_batch(source) -> Vec<Param>` — `parser.rs:250`
 
-Regex `%(?:~[a-zA-Z]*)?([1-9])` matches `%1`–`%9` and modifier forms (`%~dp1`); dedupes/sorts via a `BTreeSet`; emits one `Param { name:"argN", kind:Text, position:Some(n) }` per index.
-
-**Limits:** regex heuristics, not a parser. Misses type aliases (`[System.IO.DirectoryInfo]`), `ValidateSet` of non-strings, unusual multi-line formatting; `%%1` for-loop vars produce spurious params. The mapper exists to fix anything it gets wrong.
+Regex `%(?:~[a-zA-Z]*)?([1-9])` matches `%1`–`%9` and modifier forms (`%~dp1`); dedupes/sorts via a `BTreeSet`; emits one `Param { name:"argN", kind:Text, position:Some(n) }` per index. (`%%1` for-loop vars produce spurious params — fix in the mapper.)
 
 ---
 
@@ -251,7 +259,7 @@ Writes `<script>.disbatch.json` next to the script (designed to be committed so 
 ## 9. End-to-end walkthroughs
 
 ### Open (or drop) a script
-`update` picks up the dropped path or the file-dialog result → **`open_script`**: read to `source` → `parse_powershell`/`parse_batch` → `params` → `analyze` → `findings` → reset `risk_ack`/`editable`/`highlight_line`/`severity_filter` → if a terminal exists, `Set-Location` into the folder → `Sidecar::load`; if it has saved `controls`, rebuild `params` via `def_to_param` → `apply_saved_values` → store `script_path`. Next frame renders the populated tabs.
+`update` picks up the dropped path or the file-dialog result → **`open_script`**: read to `source` → `detect_ps1_params` (AST→regex) / `parse_batch` → `params` → `analyze` → `findings` → reset `risk_ack`/`editable`/`highlight_line`/`severity_filter` → if a terminal exists, `Set-Location` into the folder → `Sidecar::load`; if it has saved `controls`, rebuild `params` via `def_to_param` → `apply_saved_values` → store `script_path`. Next frame renders the populated tabs.
 
 ### Click Run
 `controls_tab` computes `can_run = missing_required().is_empty() && (!has_warning(findings) || risk_ack)` → button enabled → **`run`**: ensure terminal → **`compose_command`** (env prefix + positional/named) → `reset_progress` → **`terminal.send_line(cmd)`** (writes to the ConPTY as if typed) → **`save_sidecar`** (remembers the inputs). The reader thread streams output back, scraping `@progress`/`@status` into the bar.
@@ -272,7 +280,7 @@ Controls tab → click a control's binding button → `pick = Some(idx)` (applie
 4. **The DSR/PSReadLine reply** (`query_replies`) is load-bearing. Remove it and the terminal freezes with no prompt. If you ever swap the shell or the VT pipeline, keep answering `ESC[6n`.
 5. **Pause is process-level, not tree-level.** `NtSuspendProcess` freezes only `powershell.exe`; children it spawned keep running. Documented limitation.
 6. **`panic = "abort"` in release** — any `unwrap()`/`panic!` is a hard crash with no unwinding. Prefer graceful handling on user-facing paths.
-7. **Parsing is heuristic.** When you hit a script the parser mis-reads, the fix is usually a mapper feature, not more regex.
+7. **`.ps1` parsing is the real PowerShell AST** (`psparse`), with the regex parser (`parser.rs`) as a tested fallback for when the PowerShell subprocess can't run. When the controls come out wrong, prefer a mapper feature; only touch the regex fallback *in lock-step with its parity test*. `DISBATCH_NO_AST=1` forces the fallback for testing.
 
 ---
 
@@ -308,7 +316,7 @@ On a `v*` tag: `windows-latest` runs `cargo build --release` and `softprops/acti
 | Window setup, dark theme | `main.rs::main` |
 | Open a script (parse + analyze + sidecar) | `main.rs::open_script` |
 | Drag-and-drop open | `main.rs::update` (dropped_files) |
-| PowerShell param detection | `parser.rs::parse_powershell` + helpers |
+| PowerShell param detection | `psparse::parse` (AST, primary) → `parser.rs::parse_powershell` (fallback), via `main.rs::detect_ps1_params` |
 | Batch `%N` detection | `parser.rs::parse_batch` |
 | Risk rules / severities | `analyzer.rs::build_rules`, `Severity` |
 | Findings list + filter + jump | `main.rs::script_tab` (Analysis panel) |

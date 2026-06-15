@@ -7,6 +7,7 @@
 mod analyzer;
 mod model;
 mod parser;
+mod psparse;
 mod sidecar;
 mod terminal;
 
@@ -104,8 +105,15 @@ impl DisbatchApp {
                     .unwrap_or("")
                     .to_lowercase();
                 if ext == "ps1" {
-                    self.params = parser::parse_powershell(&self.source);
-                    self.note = format!("Detected {} parameter(s).", self.params.len());
+                    let (params, how) = detect_ps1_params(&self.source);
+                    self.params = params;
+                    self.note = match how {
+                        Ps1Parser::Ast => format!("Detected {} parameter(s).", self.params.len()),
+                        Ps1Parser::RegexFallback => format!(
+                            "Detected {} parameter(s) (regex fallback).",
+                            self.params.len()
+                        ),
+                    };
                 } else if ext == "bat" || ext == "cmd" {
                     self.params = parser::parse_batch(&self.source);
                     self.note = format!(
@@ -142,7 +150,7 @@ impl DisbatchApp {
     }
 
     fn reanalyze(&mut self) {
-        self.params = parser::parse_powershell(&self.source);
+        self.params = detect_ps1_params(&self.source).0;
         self.findings = analyzer::analyze(&self.source);
         self.risk_ack = false;
         self.highlight_line = None;
@@ -302,7 +310,7 @@ impl DisbatchApp {
             .unwrap_or("")
             .to_lowercase();
         self.params = if ext == "ps1" {
-            parser::parse_powershell(&self.source)
+            detect_ps1_params(&self.source).0
         } else if ext == "bat" || ext == "cmd" {
             parser::parse_batch(&self.source)
         } else {
@@ -622,6 +630,10 @@ impl DisbatchApp {
             return;
         }
         ui.add_space(4.0);
+        if !self.note.is_empty() {
+            ui.label(egui::RichText::new(self.note.as_str()).weak().small());
+            ui.add_space(2.0);
+        }
 
         egui::CollapsingHeader::new("📝 Hints / usage notes")
             .default_open(!self.sidecar.hints.trim().is_empty())
@@ -674,7 +686,7 @@ impl DisbatchApp {
         let mut remove: Option<usize> = None;
         let mut pick: Option<usize> = None;
         if self.params.is_empty() && !editing {
-            ui.label("No parameters detected — you can still run the script as-is.");
+            ui.label("No parameters detected — run it as-is, or add controls with ✏ Edit controls.");
             ui.add_space(6.0);
         } else {
             egui::Grid::new("controls")
@@ -963,6 +975,32 @@ fn sev_color(s: Severity) -> egui::Color32 {
 /// Quote a value as a PowerShell single-quoted string (doubling embedded quotes).
 fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Which parser produced the controls — surfaced in the status note so a degraded
+/// (regex) parse is never silent.
+#[derive(Clone, Copy, PartialEq)]
+enum Ps1Parser {
+    Ast,
+    RegexFallback,
+}
+
+/// PowerShell `param()` detection. The AST parser ([`psparse::parse`]) is the
+/// source of truth; the regex parser is a deliberate fallback used *only* if the
+/// PowerShell subprocess fails (not when a script simply has no parameters). The
+/// two are kept in parity by a test so falling back never surprises the user.
+///
+/// Setting the `DISBATCH_NO_AST` environment variable forces the regex fallback —
+/// an escape hatch if the AST path ever misbehaves on a machine, and the way to
+/// see the fallback in action (see `examples/parser-tricky.ps1`).
+fn detect_ps1_params(source: &str) -> (Vec<Param>, Ps1Parser) {
+    if std::env::var_os("DISBATCH_NO_AST").is_some() {
+        return (parser::parse_powershell(source), Ps1Parser::RegexFallback);
+    }
+    match psparse::parse(source) {
+        Some(params) => (params, Ps1Parser::Ast),
+        None => (parser::parse_powershell(source), Ps1Parser::RegexFallback),
+    }
 }
 
 /// Heuristic: does this control's name look like it holds a secret? Such values

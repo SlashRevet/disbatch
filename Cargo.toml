@@ -1,6 +1,6 @@
 [package]
 name = "disbatch"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Give .ps1/.bat scripts an instant GUI"
 

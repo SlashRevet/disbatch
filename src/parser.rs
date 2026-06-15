@@ -1,7 +1,13 @@
-//! Parses a PowerShell `param(...)` block into typed [`Param`]s.
+//! Regex-based parsers and the shared naming helpers.
 //!
-//! PowerShell is the sweet spot for auto-detection: a `param()` block is an
-//! already-typed parameter spec that maps almost 1:1 onto UI controls.
+//! [`parse_powershell`] is the **fallback** `.ps1` param parser. The primary is
+//! [`crate::psparse`], which drives PowerShell's real AST parser; `main.rs` only
+//! falls back here if that subprocess fails. The two are kept deliberately in
+//! lock-step — a parity test in `psparse` fails the build if they ever disagree
+//! on a conventional `param()` block — so degrading to this never surprises the
+//! user. [`parse_batch`] handles `.bat`/`.cmd` positional args, and
+//! [`kind_from_name`] / [`strip_quotes`] / [`humanize`] are shared by both PS1
+//! parsers.
 
 use crate::model::{Param, ParamKind};
 use regex::Regex;
@@ -273,7 +279,7 @@ pub fn parse_batch(source: &str) -> Vec<Param> {
 }
 
 /// Guess a path picker from the parameter name when the type is just a string.
-fn kind_from_name(name: &str) -> ParamKind {
+pub fn kind_from_name(name: &str) -> ParamKind {
     let n = name.to_lowercase();
     if n.contains("folder") || n.contains("dir") {
         ParamKind::FolderPath
@@ -284,7 +290,7 @@ fn kind_from_name(name: &str) -> ParamKind {
     }
 }
 
-fn strip_quotes(s: &str) -> String {
+pub fn strip_quotes(s: &str) -> String {
     let s = s.trim();
     let bytes = s.as_bytes();
     if s.len() >= 2
@@ -298,7 +304,7 @@ fn strip_quotes(s: &str) -> String {
 }
 
 /// "InputFolder" -> "Input Folder", "OutFile" -> "Out File", "log_path" -> "Log path".
-fn humanize(name: &str) -> String {
+pub fn humanize(name: &str) -> String {
     let mut out = String::new();
     let mut prev_lower_or_digit = false;
     for c in name.chars() {
@@ -317,5 +323,109 @@ fn humanize(name: &str) -> String {
     match chars.next() {
         Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
         None => out,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Graceful-degradation guarantee (the Reddit reviewer's #1 priority): the
+    /// regex parser is the pure-Rust fallback and MUST NOT panic on adversarial
+    /// input — release builds use `panic = "abort"`, so a panic hard-kills the
+    /// app. Correctness of the *result* is deliberately NOT asserted here;
+    /// survival is.
+    #[test]
+    fn regex_parser_never_panics_on_adversarial_input() {
+        let gnarly = r##"Function Foo {
+[CmdletBinding()]
+param (
+  # This is a comment (and this part is in parentheses)
+  [Parameter(Mandatory,
+    ValueFromPipeline
+  )][ValidateScript({
+$false
+}
+)]
+ [string]$Bar = ("`'())$($PWD.Trim()))`'")
+) #end block (and some unbalanced parentheses(and sub-parenthetical stuff with a mismatched bracket, too!‽])
+
+# Some comment (with
+# parentheses)
+
+}"##;
+        // Must return without panicking; the result may be empty or wrong.
+        let _ = parse_powershell(gnarly);
+        let _ = parse_powershell("");
+        let _ = parse_powershell("param(");
+        let _ = parse_powershell("param(   \n  ");
+        let _ = parse_powershell("param($a,, $b, [int],)");
+        let _ = parse_powershell("param([ValidateSet(]$x = \"unterminated");
+        let _ = parse_powershell(&"param(".repeat(2000));
+        let _ = parse_powershell("param([string]$x = '日本語‽')");
+    }
+
+    /// The regex fallback must also be *correct* on a realistic block, not just
+    /// non-crashing — it's what ships when the AST path is unavailable.
+    #[test]
+    fn regex_parser_is_correct_on_a_realistic_block() {
+        let src = r#"
+            param(
+                [Parameter(Mandatory = $true)][string]$InputFolder,
+                [ValidateSet("Low", "High")][string]$Quality = "Low",
+                [int]$Count = 3,
+                [switch]$Force
+            )
+        "#;
+        let p = parse_powershell(src);
+        assert_eq!(p.len(), 4);
+        let by = |n: &str| p.iter().find(|x| x.name == n).unwrap();
+        assert!(by("InputFolder").required);
+        assert_eq!(by("InputFolder").kind, ParamKind::FolderPath);
+        assert_eq!(by("Quality").kind, ParamKind::Choice);
+        assert_eq!(by("Quality").choices, vec!["Low", "High"]);
+        assert_eq!(by("Quality").value, "Low");
+        assert_eq!(by("Count").kind, ParamKind::Number);
+        assert_eq!(by("Count").value, "3");
+        assert!(by("Force").is_switch);
+        assert!(!by("InputFolder").is_switch);
+    }
+
+    #[test]
+    fn strip_quotes_handles_edges() {
+        assert_eq!(strip_quotes("\"x\""), "x");
+        assert_eq!(strip_quotes("'x'"), "x");
+        assert_eq!(strip_quotes("x"), "x");
+        assert_eq!(strip_quotes("\""), "\""); // one quote: too short to strip
+        assert_eq!(strip_quotes("\"\""), ""); // empty quoted string
+        assert_eq!(strip_quotes("\"unbalanced"), "\"unbalanced");
+        assert_eq!(strip_quotes("\"x'"), "\"x'"); // mismatched quote chars
+        assert_eq!(strip_quotes("'日本語'"), "日本語"); // multibyte between ASCII quotes
+        assert_eq!(strip_quotes("  \"x\"  "), "x"); // trims before stripping
+    }
+
+    #[test]
+    fn kind_from_name_picks_the_right_picker() {
+        assert_eq!(kind_from_name("InputFolder"), ParamKind::FolderPath);
+        assert_eq!(kind_from_name("WorkDir"), ParamKind::FolderPath);
+        assert_eq!(kind_from_name("LogFile"), ParamKind::FilePath);
+        assert_eq!(kind_from_name("ConfigPath"), ParamKind::FilePath);
+        assert_eq!(kind_from_name("UserName"), ParamKind::Text);
+    }
+
+    #[test]
+    fn humanize_splits_camel_case_and_separators() {
+        assert_eq!(humanize("InputFolder"), "Input Folder");
+        assert_eq!(humanize("OutFile"), "Out File");
+        assert_eq!(humanize("log_path"), "Log path");
+    }
+
+    #[test]
+    fn parse_batch_finds_ordered_positional_args() {
+        let p = parse_batch("@echo off\ncopy %1 %2\necho %~dpnx3 and %1 again\n");
+        let names: Vec<&str> = p.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, vec!["arg1", "arg2", "arg3"]); // de-duped, in order
+        assert_eq!(p[0].position, Some(1));
+        assert!(p.iter().all(|x| x.kind == ParamKind::Text));
     }
 }

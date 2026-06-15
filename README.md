@@ -60,8 +60,9 @@ is live from launch, with Pause / Stop / Clear and a progress bar.
 
 ## Features
 
-- **Auto-generated UI** — a PowerShell `param()` block (or a `.bat`'s `%1`/`%2`
-  positional args) becomes a form, no config required.
+- **Auto-generated UI** — a PowerShell `param()` block (read by PowerShell's own
+  AST parser — parsed, never executed) or a `.bat`'s `%1`/`%2` positional args
+  becomes a form, no config required.
 - **Two tabs**
   - **Script** — read-only, soft-wrapping preview with risky lines tinted inline and
     a risk-analysis panel + metrics. Click a finding to jump to its line.
@@ -88,6 +89,11 @@ is live from launch, with Pause / Stop / Clear and a progress bar.
   (It does write one local file: the per-script `.disbatch.json` sidecar described below.)
 
 ## How parameters map to controls
+
+A `.ps1`'s `param()` block is read with **PowerShell's own parser** (the same AST
+PSScriptAnalyzer uses): Disbatch *parses* the script — it never runs it — and stays
+offline (a local PowerShell call, no network). A built-in regex parser is the
+fallback for when PowerShell can't be invoked.
 
 | PowerShell                         | Control          |
 | ---------------------------------- | ---------------- |
@@ -144,7 +150,15 @@ cargo build --release    # -> target\release\disbatch.exe (single file)
 ```
 
 Try `examples\demo.ps1` (every control type), `examples\analyzer-demo.ps1` (the risk
-analyzer + pick-to-bind), or `examples\batch-demo.bat` (positional args), then **Run**.
+analyzer + pick-to-bind), `examples\batch-demo.bat` (positional args), or
+`examples\parser-clean.ps1` / `examples\parser-tricky.ps1` (the PowerShell-AST parser
+vs. its regex fallback), then **Run**.
+
+> **Seeing the parser fall back.** Detection uses a local PowerShell process. If it
+> ever misbehaves you can force the regex fallback with the environment variable
+> `DISBATCH_NO_AST=1` — the status note then reads "(regex fallback)". Open
+> `examples\parser-tricky.ps1` with and without it set to see the difference (a
+> `ValidateSet` dropdown the fallback can't reproduce).
 
 ## Safety note
 
