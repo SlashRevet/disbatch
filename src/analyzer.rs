@@ -105,7 +105,7 @@ fn build_rules() -> Vec<Rule> {
         // --- Privilege / policy / security toggles ---------------------------
         rule(Caution, "Elevation",          "Requests administrator elevation",              r"(?i)#requires\s+-runasadministrator|-verb\s+runas"),
         rule(Caution, "Policy",             "Weakens the PowerShell execution policy",       r"(?i)set-executionpolicy\s+(bypass|unrestricted)"),
-        rule(Warning, "Defense evasion",    "Disables Defender or the firewall",             r"(?i)disablerealtimemonitoring|-exclusionpath|netsh\s+(advfirewall|firewall)|set-mppreference"),
+        rule(Warning, "Defense evasion",    "Disables or weakens Defender or the firewall",  r"(?i)disablerealtimemonitoring|-exclusionpath|set-mppreference|add-mppreference|netsh\s+advfirewall\s+(set|reset|import)\b|netsh\s+advfirewall\s+firewall\s+(add|set|delete)\b|netsh\s+firewall\s+(set|add|delete)\b"),
     ]
 }
 
@@ -152,4 +152,50 @@ pub fn counts(findings: &[Finding]) -> (usize, usize) {
         }
     }
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for the false positive reported by @crazycat65: reading the
+    /// firewall config (`netsh advfirewall show`) must NOT be flagged.
+    #[test]
+    fn firewall_read_only_is_not_flagged() {
+        let f = analyze("$info = netsh advfirewall show allprofiles | Out-String");
+        assert!(
+            f.iter().all(|x| x.category != "Defense evasion"),
+            "read-only `netsh advfirewall show` was wrongly flagged: {f:?}"
+        );
+        // dump/export are read-only too
+        assert!(analyze("netsh advfirewall export firewall.wfw")
+            .iter()
+            .all(|x| x.category != "Defense evasion"));
+    }
+
+    /// Genuinely disabling/altering the firewall or Defender is still flagged.
+    #[test]
+    fn firewall_or_defender_changes_are_flagged() {
+        assert!(analyze("netsh advfirewall set allprofiles state off")
+            .iter()
+            .any(|x| x.category == "Defense evasion"));
+        assert!(analyze("netsh advfirewall firewall add rule name=x dir=in action=allow")
+            .iter()
+            .any(|x| x.category == "Defense evasion"));
+        assert!(analyze("Set-MpPreference -DisableRealtimeMonitoring $true")
+            .iter()
+            .any(|x| x.category == "Defense evasion"));
+    }
+
+    /// Sanity: the core high-signal rules still fire.
+    #[test]
+    fn core_rules_still_fire() {
+        assert!(analyze("Invoke-Expression $payload")
+            .iter()
+            .any(|f| f.title.contains("string as code")));
+        assert!(analyze("vssadmin delete shadows /all /quiet")
+            .iter()
+            .any(|f| f.title.contains("shadow")));
+        assert!(analyze("Write-Host 'hello world'").is_empty());
+    }
 }
